@@ -38,3 +38,18 @@ test('keeps the legacy single-field updated date filter', () => {
     }
   });
 });
+
+test('builds an inclusive last-contacted range in the request timezone', () => {
+  const filter = getLeadDateFilter({
+    lastContactedFromDate: '2026-09-28',
+    lastContactedToDate: '2026-09-29',
+    timezoneOffsetMinutes: '-60'
+  });
+
+  assert.deepEqual(filter, {
+    lastContactedAt: {
+      $gte: new Date('2026-09-27T23:00:00.000Z'),
+      $lte: new Date('2026-09-29T22:59:59.999Z')
+    }
+  });
+});

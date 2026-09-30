@@ -51,7 +51,7 @@ export const getLeadDateFilter = (query: Record<string, unknown>) => {
   const timezoneOffsetMinutes = parseOffset(query.timezoneOffsetMinutes);
   const filter: Record<string, Record<string, Date>> = {};
 
-  const addRange = (field: 'createdAt' | 'updatedAt', from: unknown, to: unknown) => {
+  const addRange = (field: 'createdAt' | 'updatedAt' | 'lastContactedAt', from: unknown, to: unknown) => {
     const start = parseDateBoundary(from, 'start', timezoneOffsetMinutes);
     const end = parseDateBoundary(to, 'end', timezoneOffsetMinutes);
     if (!start && !end) return;
@@ -64,6 +64,7 @@ export const getLeadDateFilter = (query: Record<string, unknown>) => {
 
   addRange('createdAt', query.createdFromDate, query.createdToDate);
   addRange('updatedAt', query.modifiedFromDate, query.modifiedToDate);
+  addRange('lastContactedAt', query.lastContactedFromDate, query.lastContactedToDate);
 
   // Preserve the original single-field date API used by dashboard and analytics screens.
   const exactDate = firstValue(query.date);

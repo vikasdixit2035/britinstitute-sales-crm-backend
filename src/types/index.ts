@@ -68,12 +68,18 @@ export interface ILead extends Document {
   metaOriginalName?: string;
   metaOriginalEmail?: string;
   metaOriginalPhone?: string;
+  metaAttributes?: IMetaAttribute[];
   metaRawPayload?: Record<string, unknown>;
   metaFeedbackLastStatus?: string;
   metaFeedbackLastSentAt?: Date;
   metaFeedbackLastError?: string;
   assignedTo?: mongoose.Types.ObjectId;
   assignedBy?: mongoose.Types.ObjectId;
+  lastContactedAt?: Date;
+  lastContactedBy?: mongoose.Types.ObjectId;
+  lastContactedByName?: string;
+  lastContactedByEmail?: string;
+  lastContactedZoomCallId?: string;
 
   /**  THIS WAS MISSING */
   assignmentHistory: IAssignmentHistory[];
@@ -172,6 +178,13 @@ export interface AddNoteInput {
   content: string;
 }
 
+export interface IMetaAttribute {
+  key: string;
+  label: string;
+  value: string;
+  rawValue?: string;
+}
+
 export interface MakeMetaLeadInput {
   metaLeadId: string;
   name: string;
@@ -190,6 +203,7 @@ export interface MakeMetaLeadInput {
   originalName: string;
   originalEmail: string;
   originalPhone: string;
+  metaAttributes?: IMetaAttribute[];
   rawPayload: Record<string, unknown>;
 }
 

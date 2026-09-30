@@ -146,6 +146,15 @@ const leadSchema = new Schema<ILead>({
     required: false,
     default: ''
   },
+  metaAttributes: [
+    {
+      _id: false,
+      key: { type: String, trim: true },
+      label: { type: String, trim: true },
+      value: { type: String, trim: true },
+      rawValue: { type: String, trim: true }
+    }
+  ],
   metaRawPayload: {
     type: Schema.Types.Mixed,
     required: false
@@ -187,6 +196,26 @@ const leadSchema = new Schema<ILead>({
   assignedBy: {
     type: Schema.Types.ObjectId,
     ref: 'User'
+  },
+  lastContactedAt: {
+    type: Date
+  },
+  lastContactedBy: {
+    type: Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  lastContactedByName: {
+    type: String,
+    trim: true
+  },
+  lastContactedByEmail: {
+    type: String,
+    trim: true,
+    lowercase: true
+  },
+  lastContactedZoomCallId: {
+    type: String,
+    trim: true
   },
 
   /* =======================
@@ -254,6 +283,7 @@ leadSchema.index({ folder: 1 });
 leadSchema.index({ assignedTo: 1 });
 leadSchema.index({ createdAt: -1 });
 leadSchema.index({ updatedAt: -1 });
+leadSchema.index({ lastContactedAt: -1 });
 leadSchema.index({ createdAt: 1 });
 
 // Compound indexes
@@ -287,6 +317,13 @@ leadSchema.virtual('assignedToUser', {
 leadSchema.virtual('assignedByUser', {
   ref: 'User',
   localField: 'assignedBy',
+  foreignField: '_id',
+  justOne: true
+});
+
+leadSchema.virtual('lastContactedByUser', {
+  ref: 'User',
+  localField: 'lastContactedBy',
   foreignField: '_id',
   justOne: true
 });

@@ -4,7 +4,7 @@ import DuplicateLead from '../models/DuplicateLead';
 import RetargetingLead from '../models/RetargetingLead';
 import User from '../models/User';
 import { getCsvFromGoogleSheet } from '../utils/googleSheet';
-import { applyLeadDateFilter } from '../utils/leadDateFilter';
+import { applyLeadDateFilter, getLeadDateFilter } from '../utils/leadDateFilter';
 import { Response } from 'express';   // ✅ must import from 'express'
 
 const escapeSearchText = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -356,7 +356,9 @@ const getRetargetingLeadsService = async (
   const pageNum = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
   const limitNum = Math.max(1, parseInt(String(req.query.limit || '10'), 10) || 10);
   const eventFilter: Record<string, unknown> = {};
-  applyLeadDateFilter(eventFilter, req.query as Record<string, unknown>);
+  const dateFilter = getLeadDateFilter(req.query as Record<string, unknown>);
+  const { lastContactedAt, ...eventDateFilter } = dateFilter;
+  Object.assign(eventFilter, eventDateFilter);
 
   const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
   if (search) {
@@ -370,6 +372,7 @@ const getRetargetingLeadsService = async (
   }
 
   const linkedLeadFilter: Record<string, unknown> = {};
+  if (lastContactedAt) linkedLeadFilter['existingLead.lastContactedAt'] = lastContactedAt;
   const accessUserId = restrictToUserId || (req.user?.role !== 'admin' ? req.user?.userId : undefined);
   if (accessUserId && mongoose.Types.ObjectId.isValid(accessUserId)) {
     linkedLeadFilter['existingLead.assignedTo'] = new mongoose.Types.ObjectId(accessUserId);
@@ -455,6 +458,10 @@ const getRetargetingLeadsService = async (
     assignedTo: event.existingLead.assignedTo,
     assignedBy: event.existingLead.assignedBy,
     assignedToUser: event.assignedToUser,
+    lastContactedAt: event.existingLead.lastContactedAt,
+    lastContactedBy: event.existingLead.lastContactedBy,
+    lastContactedByName: event.existingLead.lastContactedByName,
+    lastContactedByEmail: event.existingLead.lastContactedByEmail,
     notes: [],
     leadScore: event.existingLead.leadScore,
     isRetargeting: true,
@@ -483,8 +490,9 @@ export const countRetargetingLeads = async (
   dateFilter: Record<string, unknown>,
   assignedToUserId?: string
 ): Promise<number> => {
+  const { lastContactedAt, ...eventDateFilter } = dateFilter;
   const pipeline: mongoose.PipelineStage[] = [
-    { $match: dateFilter },
+    { $match: eventDateFilter },
     {
       $lookup: {
         from: Lead.collection.name,
@@ -495,6 +503,10 @@ export const countRetargetingLeads = async (
     },
     { $unwind: '$existingLead' }
   ];
+
+  if (lastContactedAt) {
+    pipeline.push({ $match: { 'existingLead.lastContactedAt': lastContactedAt } });
+  }
 
   if (assignedToUserId && mongoose.Types.ObjectId.isValid(assignedToUserId)) {
     pipeline.push({
@@ -648,6 +660,7 @@ export const getLeadsService = async (
     Lead.find(filter)
       .populate('assignedToUser', 'name email')
       .populate('assignedByUser', 'name email')
+      .populate('lastContactedByUser', 'name email')
       .populate('assignmentHistory.assignedTo', 'name email')
       .populate('assignmentHistory.assignedBy', 'name email')
       .populate('notes.createdBy', 'name email')

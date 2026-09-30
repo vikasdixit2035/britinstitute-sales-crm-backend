@@ -38,7 +38,7 @@ export const io = new SocketIOServer(httpServer, {
     methods: ['GET', 'POST']
   }
 });
-import './corn';
+import { runZoomPhoneSync } from './corn';
 
 io.on('connection', (socket) => {
   console.log('🔌 Socket connected:', socket.id);
@@ -195,6 +195,7 @@ const startServer = async () => {
   try {
     await connectDatabase();
     await ensureSystemUser();
+    void runZoomPhoneSync();
 
     server = httpServer.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);

@@ -81,3 +81,70 @@ test('builds the Make feedback payload expected by the CRM conversions module', 
   assert.equal(payload.previousStatus, 'Contacted');
   assert.equal(payload.campaignName, 'Summer Campaign');
 });
+
+test('extracts and formats custom form attributes from Make collection format (Screenshot 2)', () => {
+  const payload = {
+    metaLeadId: '2019744138745208',
+    fieldData: {
+      full_name: 'Adnaan yaqoob',
+      phone_number: '+447492054477',
+      education_level: 'High school / GED',
+      'what_is_your_primary_goal_for_enrolling_in_this_program?': ['get_a_job_in_data_analytics'],
+      'when_are_you_planning_to_start_the_course?': ['immediately'],
+      email: 'Adnaanyaqoob@outlook.com',
+      'what_is_your_current_status?': ['employed'],
+    },
+  };
+
+  const lead = normalizeMakeMetaLeadInput(payload);
+
+  assert.equal(lead.name, 'Adnaan yaqoob');
+  assert.equal(lead.email, 'adnaanyaqoob@outlook.com');
+  assert.equal(lead.phone, '+447492054477');
+
+  assert.ok(lead.metaAttributes);
+  assert.equal(lead.metaAttributes.length, 4);
+
+  const goalAttr = lead.metaAttributes.find(
+    (a) => a.key === 'what_is_your_primary_goal_for_enrolling_in_this_program?'
+  );
+  assert.ok(goalAttr);
+  assert.equal(goalAttr.label, 'What is your primary goal for enrolling in this program?');
+  assert.equal(goalAttr.value, 'Get a job in data analytics');
+
+  const eduAttr = lead.metaAttributes.find((a) => a.key === 'education_level');
+  assert.ok(eduAttr);
+  assert.equal(eduAttr.label, 'Education Level');
+  assert.equal(eduAttr.value, 'High school / GED');
+
+  const whenAttr = lead.metaAttributes.find(
+    (a) => a.key === 'when_are_you_planning_to_start_the_course?'
+  );
+  assert.ok(whenAttr);
+  assert.equal(whenAttr.label, 'When are you planning to start the course?');
+  assert.equal(whenAttr.value, 'Immediately');
+
+  const statusAttr = lead.metaAttributes.find((a) => a.key === 'what_is_your_current_status?');
+  assert.ok(statusAttr);
+  assert.equal(statusAttr.label, 'What is your current status?');
+  assert.equal(statusAttr.value, 'Employed');
+});
+
+test('extracts attributes from Make mappableFieldData and top-level fields', () => {
+  const payload = {
+    metaLeadId: '123456789',
+    mappableFieldData: [
+      { Name: 'full_name', Value: 'Adnaan yaqoob' },
+      { Name: 'phone_number', Value: '+447492054477' },
+      { Name: 'email', Value: 'adnaan@test.com' },
+      { Name: 'education_level', Value: 'High school / GED' },
+      { Name: 'what_is_your_primary_goal_for_enrolling_in_this_program?', Value: 'get_a_job_in_data_analytics' },
+    ],
+  };
+
+  const lead = normalizeMakeMetaLeadInput(payload);
+  assert.equal(lead.name, 'Adnaan yaqoob');
+  assert.equal(lead.email, 'adnaan@test.com');
+  assert.equal(lead.metaAttributes?.length, 2);
+});
+

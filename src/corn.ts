@@ -1,34 +1,55 @@
 import cron from 'node-cron';
 import reminder from './models/reminder';
 import { io } from './server';
-import { zoomPhoneService } from './service/zoomPhone.service';
+import { syncLeadLastContactedFromZoomCalls, zoomPhoneService } from './service/zoomPhone.service';
 
 const shouldRunCron =
   !process.env.NODE_APP_INSTANCE ||
   process.env.NODE_APP_INSTANCE === '0';
 
+let zoomAssignmentSyncRunning = false;
+let zoomLastContactInitialSyncComplete = false;
+
+export const runZoomPhoneSync = async () => {
+  if (!shouldRunCron || zoomAssignmentSyncRunning) return;
+
+  try {
+    zoomAssignmentSyncRunning = true;
+    const status = zoomPhoneService.getStatus();
+    if (!status.configured) return;
+
+    const defaultLookbackDays = zoomLastContactInitialSyncComplete ? 2 : 30;
+    const configuredLookback = Number(
+      process.env.ZOOM_PHONE_LAST_CONTACT_LOOKBACK_DAYS || defaultLookbackDays
+    );
+    const lookbackDays = Number.isFinite(configuredLookback)
+      ? Math.min(Math.max(Math.trunc(configuredLookback), 1), 30)
+      : defaultLookbackDays;
+    const now = new Date();
+    const from = new Date(now.getTime() - lookbackDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const to = now.toISOString().slice(0, 10);
+    const calls = await zoomPhoneService.getContactSyncCalls({
+      from,
+      to,
+      pageSize: 300,
+      maxPages: zoomLastContactInitialSyncComplete ? 2 : 5,
+      includeRecordings: false
+    });
+    const updatedLeads = await syncLeadLastContactedFromZoomCalls(calls);
+    zoomLastContactInitialSyncComplete = true;
+    console.log(`✅ Zoom Phone assignments and last-contacted data synced (${updatedLeads} leads updated)`);
+  } catch (error) {
+    console.error('🔥 ZOOM PHONE ASSIGNMENT SYNC ERROR:', error);
+  } finally {
+    zoomAssignmentSyncRunning = false;
+  }
+};
+
 if (shouldRunCron) {
   console.log('🕒 Reminder cron started');
   console.log('☎️ Zoom Phone assignment sync cron started');
 
-  let zoomAssignmentSyncRunning = false;
-
-  cron.schedule(process.env.ZOOM_PHONE_ASSIGNMENT_SYNC_CRON || '*/5 * * * *', async () => {
-    if (zoomAssignmentSyncRunning) return;
-
-    try {
-      zoomAssignmentSyncRunning = true;
-      const status = zoomPhoneService.getStatus();
-      if (!status.configured) return;
-
-      await zoomPhoneService.getAccountInventory({ pageSize: 300, maxPages: 2 });
-      console.log('✅ Zoom Phone number assignment history synced');
-    } catch (error) {
-      console.error('🔥 ZOOM PHONE ASSIGNMENT SYNC ERROR:', error);
-    } finally {
-      zoomAssignmentSyncRunning = false;
-    }
-  });
+  cron.schedule(process.env.ZOOM_PHONE_ASSIGNMENT_SYNC_CRON || '*/5 * * * *', runZoomPhoneSync);
 
   cron.schedule('* * * * *', async () => {
     try {

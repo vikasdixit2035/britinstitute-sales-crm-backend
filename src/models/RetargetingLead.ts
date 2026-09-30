@@ -68,6 +68,15 @@ const retargetingLeadSchema = new Schema(
     metaPageId: { type: String, trim: true, default: '' },
     metaAdId: { type: String, trim: true, default: '' },
     metaCreatedTime: { type: Date },
+    metaAttributes: [
+      {
+        _id: false,
+        key: { type: String, trim: true },
+        label: { type: String, trim: true },
+        value: { type: String, trim: true },
+        rawValue: { type: String, trim: true }
+      }
+    ],
     rawPayload: { type: Schema.Types.Mixed, required: true }
   },
   { timestamps: true }

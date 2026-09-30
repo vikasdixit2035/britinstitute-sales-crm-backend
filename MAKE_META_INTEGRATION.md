@@ -45,10 +45,29 @@ Map the Facebook module output into this body:
   "pageId": "<Page ID>",
   "adId": "<Ad ID>",
   "createdTime": "<Created time>"
+  "createdTime": "<Created time>",
+  "fieldData": <1. Field data>,
+  "mappableFieldData": <1. Mappable field data>
 }
 ```
 
 The API also accepts Make/Meta snake-case names such as `lead_id`, `full_name`, `phone_number`, `campaign_name`, and `created_time`. Only `metaLeadId` is required. Missing, placeholder, or invalid contact values do not reject the lead: the original values and complete incoming payload are retained on the Meta lead, while unique internal fallback values keep the CRM record usable. Repeated delivery of the same Facebook Lead ID is idempotent and returns the existing record instead of creating a duplicate. A new Facebook Lead ID whose normalized email or phone already belongs to a CRM lead creates a separate Retargeting event. The original lead keeps its stage, assignment, notes, and conversation history.
+### Passing custom form attributes (e.g. goals, education level, timeline)
+
+Different Meta Lead Ads forms contain different custom questions and choices (such as `what_is_your_primary_goal_for_enrolling_in_this_program?`, `education_level`, `when_are_you_planning_to_start_the_course?`, `what_is_your_current_status?`).
+
+You can pass these into the CRM in any of the following convenient ways:
+
+1. **Recommended (Automated)**: Map `"fieldData": <1. Field data>` or `"mappableFieldData": <1. Mappable field data>` in the JSON body. The CRM will automatically detect all questions and answers, format question labels (e.g. converting `what_is_your_primary_goal_for_enrolling_in_this_program?` to *What is your primary goal for enrolling in this program?*), clean up option values, and display them under **Meta Attribution** in the CRM lead details page.
+2. **Direct JSON keys**: Map custom question fields directly as additional properties in the JSON body:
+   ```json
+   "what_is_your_primary_goal_for_enrolling_in_this_program": "<1. Field data.what_is_your_primary_goal_for_enrolling_in_this_program>",
+   "education_level": "<1. Field data.education_level>",
+   "when_are_you_planning_to_start_the_course": "<1. Field data.when_are_you_planning_to_start_the_course>"
+   ```
+3. **Explicit object**: Place them inside `"customFields": { ... }` or `"metaAttributes": [ ... ]`.
+
+The API also accepts Make/Meta snake-case names such as `lead_id`, `full_name`, `phone_number`, `campaign_name`, and `created_time`. Only `metaLeadId` is required. Missing, placeholder, or invalid contact values do not reject the lead: the original values and complete incoming payload are retained on the Meta lead, while unique internal fallback values keep the CRM record usable. Repeated delivery of the same Facebook Lead ID is idempotent and updates/refreshes custom form attributes on the lead instead of creating a duplicate. A new Facebook Lead ID whose normalized email or phone already belongs to a CRM lead creates a separate Retargeting event. The original lead keeps its stage, assignment, notes, and conversation history.
 
 Expected success outcomes are `created`, `retargeting` (a repeat contact linked to the original lead), or `duplicate`.
 

@@ -241,6 +241,7 @@ export interface ZoomPhoneMetricCall {
   call_type?: string;
   owner?: ZoomPhoneOwner;
   matched_user?: ZoomPhoneCrmUserMatch;
+  matched_lead?: ZoomPhoneCrmLeadMatch;
   connected_number?: string;
   zoom_account?: string;
   live_status?: 'on_call' | 'available' | 'recent';
@@ -427,6 +428,9 @@ const buildPageSize = (pageSize?: number) => {
   const requested = pageSize && Number.isFinite(pageSize) ? Math.trunc(pageSize) : configuredMax;
   return Math.min(Math.max(requested, 1), configuredMax, MAX_ZOOM_PAGE_SIZE);
 };
+
+const getZoomRequestTimeoutMs = () =>
+  getNumberValue(process.env.ZOOM_PHONE_REQUEST_TIMEOUT_MS, 30_000, 5_000, 120_000);
 
 const buildAnalyticsMaxPages = (maxPages?: number) => {
   const configuredMax = getNumberValue(
@@ -1302,6 +1306,7 @@ const buildCallLogFromMetric = (call: ZoomPhoneMetricCall): ZoomPhoneCallLog => 
       phone_number: agentParty?.phone_number
     },
     matched_user: call.matched_user,
+    matched_lead: call.matched_lead,
     site: call.owner
       ? undefined
       : agentParty?.site_id || agentParty?.site_name
@@ -1576,6 +1581,8 @@ const enrichMetricCall = (call: ZoomPhoneMetricCall, context: CrmMatchContext): 
   const zoomAccount = getLikelyZoomAccountNumber(call);
   if (connectedNumber) enriched.connected_number = connectedNumber;
   if (zoomAccount) enriched.zoom_account = zoomAccount;
+  const matchedLead = findPhoneMatch([connectedNumber], context.leads);
+  if (matchedLead) enriched.matched_lead = matchedLead;
   enriched.live_status = isLiveMetricCall(call) ? 'on_call' : 'recent';
 
   return enriched;
@@ -1844,6 +1851,7 @@ const getZoomAccessToken = async () => {
 
   const response = await fetch(url.toString(), {
     method: 'POST',
+    signal: AbortSignal.timeout(getZoomRequestTimeoutMs()),
     headers: {
       Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`
     }
@@ -1880,6 +1888,7 @@ const requestZoomJson = async <T>(endpoint: string, query?: Record<string, strin
   });
 
   const response = await fetch(url.toString(), {
+    signal: AbortSignal.timeout(getZoomRequestTimeoutMs()),
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'application/json'
@@ -1983,6 +1992,81 @@ const getTalkTimePhoneUsers = async () => {
     })().finally(() => { talkTimeUsersPending = undefined; });
   }
   return talkTimeUsersPending;
+};
+
+/**
+ * Persist the latest completed Zoom Phone contact for each matched CRM lead.
+ * Keeping this denormalized on Lead makes list sorting/filtering a local MongoDB
+ * query and avoids calling Zoom whenever someone opens the leads page.
+ */
+export const syncLeadLastContactedFromZoomCalls = async (calls: ZoomPhoneAnalyticsCall[]) => {
+  const latestByLead = new Map<string, { call: ZoomPhoneAnalyticsCall; contactedAt: Date }>();
+
+  for (const call of calls) {
+    const leadId = call.matched_lead?.id;
+    const duration = Number(call.duration || 0);
+    const isCompletedContact = call.normalized_status === 'Connected' || duration > 0;
+    const rawContactedAt = call.call_end_time || call.started_at || call.answer_start_time || call.date_time;
+    if (!leadId || !isCompletedContact || !rawContactedAt) continue;
+
+    const contactedAt = new Date(rawContactedAt);
+    if (Number.isNaN(contactedAt.getTime())) continue;
+    // Metrics records generally expose only a start time plus duration. In that
+    // case store the completion time, which is what "last contacted" represents.
+    if (!call.call_end_time && duration > 0) {
+      contactedAt.setTime(contactedAt.getTime() + duration * 1000);
+    }
+
+    const current = latestByLead.get(leadId);
+    if (!current || contactedAt > current.contactedAt) {
+      latestByLead.set(leadId, { call, contactedAt });
+    }
+  }
+
+  if (latestByLead.size === 0) return 0;
+
+  const operations = Array.from(latestByLead.entries()).map(([leadId, { call, contactedAt }]) => {
+    const matchedUser = call.matched_user;
+    const callId = getIdentityValues(call)[0];
+    const directionBasedAgentName =
+      call.normalized_direction === 'Outgoing'
+        ? call.caller_name
+        : call.normalized_direction === 'Incoming'
+          ? call.callee_name
+          : undefined;
+    const setFields: Record<string, unknown> = {
+      lastContactedAt: contactedAt,
+      lastContactedByName:
+        matchedUser?.name || call.owner?.name || directionBasedAgentName || 'Unknown salesperson'
+    };
+
+    if (matchedUser?.id) setFields.lastContactedBy = matchedUser.id;
+    if (matchedUser?.email) setFields.lastContactedByEmail = matchedUser.email;
+    if (callId) setFields.lastContactedZoomCallId = callId;
+
+    const update: Record<string, unknown> = { $set: setFields };
+    const unsetFields: Record<string, 1> = {};
+    if (!matchedUser?.id) unsetFields.lastContactedBy = 1;
+    if (!matchedUser?.email) unsetFields.lastContactedByEmail = 1;
+    if (!callId) unsetFields.lastContactedZoomCallId = 1;
+    if (Object.keys(unsetFields).length > 0) update.$unset = unsetFields;
+
+    return {
+      updateOne: {
+        filter: {
+          _id: leadId,
+          $or: [
+            { lastContactedAt: { $exists: false } },
+            { lastContactedAt: { $lt: contactedAt } }
+          ]
+        },
+        update
+      }
+    };
+  });
+
+  const result = await Lead.bulkWrite(operations, { ordered: false, timestamps: false });
+  return result.modifiedCount;
 };
 
 export const zoomPhoneService = {
@@ -2223,6 +2307,36 @@ export const zoomPhoneService = {
 
   getAccountLiveStatus: async (query: ZoomPhoneQuery) => {
     return buildLiveStatusResponse(query);
+  },
+
+  getContactSyncCalls: async (query: ZoomPhoneQuery): Promise<ZoomPhoneAnalyticsCall[]> => {
+    // Contact sync only needs CRM users/leads and the existing number-assignment
+    // history. Skipping Zoom inventory here keeps startup sync fast and avoids
+    // coupling lead contact data to the slower inventory endpoints.
+    const [context, metricPages] = await Promise.all([
+      buildCrmMatchContext(),
+      fetchZoomPages<ZoomPhoneMetricsResponse, ZoomPhoneMetricCall>(
+        '/phone/metrics/call_logs',
+        'call_logs',
+        query
+      )
+    ]);
+    let callLogs = metricPages.items.map((call) => buildCallLogFromMetric(enrichMetricCall(call, context)));
+    let pagesScanned = metricPages.pagesScanned;
+
+    if (callLogs.length === 0) {
+      const callLogPages = await fetchZoomPages<ZoomCallLogsResponse, ZoomPhoneCallLog>(
+        '/phone/call_logs',
+        'call_logs',
+        query
+      );
+      callLogs = callLogPages.items.map((call) =>
+        enrichZoomPhoneItem({ ...call, source: 'call_log' as const }, context)
+      );
+      pagesScanned = callLogPages.pagesScanned;
+    }
+
+    return buildAnalyticsResponse(query, callLogs, [], pagesScanned).call_logs;
   },
 
   getAccountAnalytics: async (query: ZoomPhoneQuery) => {
