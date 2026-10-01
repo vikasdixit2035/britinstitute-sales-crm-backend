@@ -4,13 +4,14 @@ import Lead from '../models/Lead';
 import RetargetingLead from '../models/RetargetingLead';
 import User from '../models/User';
 import type { ILead, MakeMetaLeadInput, MetaFeedbackPayload } from '../types';
+import { createLeadWithDuplicateLink, type DuplicateMatch } from './leadCreation.service';
+export { duplicateLabelForSequence, normalizePhoneIdentity } from './leadCreation.service';
 
-export type MakeMetaUpsertOutcome = 'created' | 'retargeting' | 'duplicate';
+export type MakeMetaUpsertOutcome = 'created' | 'duplicate';
 
 export interface MakeMetaUpsertResult {
   outcome: MakeMetaUpsertOutcome;
   lead: ILead;
-  retargetingLead?: Record<string, unknown>;
 }
 
 export interface MetaFeedbackResult {
@@ -374,20 +375,6 @@ const phonePattern = /^[+]?([\d\s\-().]){7,25}$/;
 const normalizePhone = (value: string): string =>
   value.replace(/[^\d+\-().\s]/g, '').replace(/\s+/g, ' ').trim();
 
-export const normalizePhoneIdentity = (value: string): string => value.replace(/\D/g, '');
-
-export const duplicateLabelForSequence = (sequence: number): string =>
-  sequence <= 1 ? 'Duplicate' : `Duplicate_${sequence}`;
-
-const phoneIdentityPattern = (value: string): RegExp | null => {
-  const digits = normalizePhoneIdentity(value);
-  if (digits.length < 7) return null;
-  return new RegExp(`^\\D*${digits.split('').join('\\D*')}\\D*$`);
-};
-
-const exactTextPattern = (value: string): RegExp =>
-  new RegExp(`^${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
-
 const parseMetaCreatedTime = (value: string): Date | undefined => {
   if (!value) return undefined;
 
@@ -495,83 +482,51 @@ export const upsertMakeMetaLead = async (leadData: MakeMetaLeadInput): Promise<M
     if (changed) {
       await existingByMetaId.save();
     }
+    await RetargetingLead.updateOne(
+      { metaLeadId: leadData.metaLeadId, migratedLeadId: { $exists: false } },
+      { $set: { migratedLeadId: existingByMetaId._id, migratedAt: new Date() } }
+    );
     return { outcome: 'duplicate', lead: existingByMetaId };
   }
 
   const existingRetargeting = await RetargetingLead.findOne({ metaLeadId: leadData.metaLeadId });
+  let legacyMatch: DuplicateMatch | undefined;
   if (existingRetargeting) {
     const linkedLead = await Lead.findById(existingRetargeting.existingLeadId);
     if (!linkedLead) {
       throw new Error('The original CRM lead linked to this retargeting event no longer exists');
     }
-    let changed = false;
-    if (leadData.metaAttributes && leadData.metaAttributes.length > 0) {
-      existingRetargeting.set('metaAttributes', leadData.metaAttributes);
-      changed = true;
-    }
-    if (leadData.rawPayload && Object.keys(leadData.rawPayload).length > 0) {
-      existingRetargeting.rawPayload = {
-        ...(existingRetargeting.rawPayload || {}),
-        ...leadData.rawPayload,
-      };
-      changed = true;
-    }
-    if (changed) {
-      await existingRetargeting.save();
-    }
-    return {
-      outcome: 'duplicate',
-      lead: linkedLead,
-      retargetingLead: existingRetargeting.toObject() as unknown as Record<string, unknown>,
+    legacyMatch = { lead: linkedLead, reason: existingRetargeting.matchReason };
+    const rawPayload = { ...existingRetargeting.rawPayload, ...leadData.rawPayload };
+    const restored = normalizeMakeMetaLeadInput({
+      ...rawPayload,
+      metaLeadId: existingRetargeting.metaLeadId,
+      name: leadData.name || existingRetargeting.name,
+      email: leadData.email || existingRetargeting.email,
+      phone: leadData.phone || existingRetargeting.phone,
+      whatsapp: leadData.whatsapp || existingRetargeting.whatsapp,
+      position: leadData.position || existingRetargeting.position,
+      campaignName: leadData.campaignName || existingRetargeting.campaignName,
+      adsetName: leadData.adsetName || existingRetargeting.adsetName,
+      adName: leadData.adName || existingRetargeting.adName,
+      formId: leadData.formId || existingRetargeting.metaFormId,
+      pageId: leadData.pageId || existingRetargeting.metaPageId,
+      adId: leadData.adId || existingRetargeting.metaAdId,
+      createdTime: existingRetargeting.metaCreatedTime?.toISOString() || leadData.createdTime
+    });
+    leadData = {
+      ...restored,
+      rawPayload,
+      metaAttributes: leadData.metaAttributes?.length ? leadData.metaAttributes : existingRetargeting.metaAttributes.map((attribute) => ({
+        key: attribute.key || '', label: attribute.label || '', value: attribute.value || '',
+        ...(attribute.rawValue ? { rawValue: attribute.rawValue } : {})
+      }))
     };
   }
 
-  const existingByEmail = emailPattern.test(leadData.email)
-    ? await Lead.findOne({ email: leadData.email })
-    : null;
-  const normalizedPhonePattern = phonePattern.test(leadData.phone)
-    ? phoneIdentityPattern(leadData.phone)
-    : null;
-  const existingByPhone = !existingByEmail && normalizedPhonePattern
-    ? await Lead.findOne({ phone: normalizedPhonePattern })
-    : null;
-  const existingByName = !existingByEmail && !existingByPhone && leadData.name.length >= 2
-    ? await Lead.findOne({ name: exactTextPattern(leadData.name) }).sort({ createdAt: 1 })
-    : null;
-  const existingByContact = existingByEmail || existingByPhone || existingByName;
   const systemUserId = await getSystemUserId();
-
   const contactValues = crmContactValues(leadData);
-  const emailMatches = Boolean(existingByContact && emailPattern.test(leadData.email) &&
-    existingByContact.email === leadData.email);
-  const phoneMatches = Boolean(existingByContact && phonePattern.test(leadData.phone) &&
-    normalizePhoneIdentity(existingByContact.phone) === normalizePhoneIdentity(leadData.phone));
-  const nameMatches = Boolean(existingByContact &&
-    existingByContact.name.trim().toLowerCase() === leadData.name.trim().toLowerCase());
-  const duplicateMatchReason = emailMatches && phoneMatches
-    ? 'EMAIL_PHONE_EXISTS'
-    : emailMatches
-      ? 'EMAIL_EXISTS'
-      : phoneMatches
-        ? 'PHONE_EXISTS'
-        : nameMatches
-          ? 'NAME_EXISTS'
-          : 'PHONE_EXISTS';
-  const originalLead = existingByContact?.duplicateOf
-    ? (await Lead.findById(existingByContact.duplicateOf)) || existingByContact
-    : existingByContact;
-
-  let duplicateSequence: number | undefined;
-  let duplicateLabel: string | undefined;
-  if (originalLead) {
-    const latestDuplicate = await Lead.findOne({ duplicateOf: originalLead._id })
-      .sort({ duplicateSequence: -1 })
-      .select('duplicateSequence');
-    duplicateSequence = (latestDuplicate?.duplicateSequence || 0) + 1;
-    duplicateLabel = duplicateLabelForSequence(duplicateSequence);
-  }
-
-  const lead = new Lead({
+  const lead = await createLeadWithDuplicateLink({
     name: contactValues.name,
     email: contactValues.email,
     phone: contactValues.phone,
@@ -597,50 +552,22 @@ export const upsertMakeMetaLead = async (leadData: MakeMetaLeadInput): Promise<M
     metaAttributes: leadData.metaAttributes || [],
     metaRawPayload: leadData.rawPayload,
     assignedBy: systemUserId,
-    ...(originalLead ? {
-      duplicateOf: originalLead._id,
-      duplicateSequence,
-      duplicateLabel,
-      duplicateMatchReason,
-      assignedTo: originalLead.assignedTo,
-    } : {}),
+    notes: systemUserId ? [{
+      id: new mongoose.Types.ObjectId().toString(),
+      content: buildAuditNote(leadData),
+      createdBy: systemUserId,
+      createdAt: existingRetargeting?.createdAt || new Date()
+    }] : [],
+    ...(existingRetargeting ? { createdAt: existingRetargeting.createdAt, updatedAt: existingRetargeting.updatedAt } : {})
+  }, {
+    ...(legacyMatch ? { match: legacyMatch } : {}),
+    ...(existingRetargeting ? { saveOptions: { timestamps: false } } : {})
   });
 
-  if (systemUserId) {
-    lead.notes.push({
-      id: new mongoose.Types.ObjectId().toString(),
-      content: originalLead
-        ? `${duplicateLabel} of older lead ${String(originalLead._id)} (${duplicateMatchReason}). ${buildAuditNote(leadData)}`
-        : buildAuditNote(leadData),
-      createdBy: systemUserId,
-      createdAt: new Date(),
+  if (existingRetargeting) {
+    await RetargetingLead.updateOne({ _id: existingRetargeting._id }, {
+      $set: { migratedLeadId: lead._id, migratedAt: new Date() }
     });
-  }
-
-  let saveAttempt = 0;
-  while (true) {
-    try {
-      await lead.save();
-      break;
-    } catch (error: unknown) {
-      const mongoError = error as { code?: number; keyPattern?: Record<string, unknown> };
-      const sequenceConflict = mongoError.code === 11000 && Boolean(mongoError.keyPattern?.duplicateOf);
-      if (!originalLead || !sequenceConflict || saveAttempt >= 2) throw error;
-
-      saveAttempt += 1;
-      const latestDuplicate = await Lead.findOne({ duplicateOf: originalLead._id })
-        .sort({ duplicateSequence: -1 })
-        .select('duplicateSequence');
-      duplicateSequence = (latestDuplicate?.duplicateSequence || 0) + 1;
-      duplicateLabel = duplicateLabelForSequence(duplicateSequence);
-      lead.duplicateSequence = duplicateSequence;
-      lead.duplicateLabel = duplicateLabel;
-
-      const auditNote = lead.notes[lead.notes.length - 1];
-      if (auditNote && systemUserId) {
-        auditNote.content = `${duplicateLabel} of older lead ${String(originalLead._id)} (${duplicateMatchReason}). ${buildAuditNote(leadData)}`;
-      }
-    }
   }
   return { outcome: 'created', lead };
 };

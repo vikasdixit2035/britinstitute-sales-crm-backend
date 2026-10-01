@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import mongoose from 'mongoose';
 import Lead from '../models/Lead';
+import { createLeadWithDuplicateLink } from '../service/leadCreation.service';
 import type { 
   ExcelUploadResult,
   LeadSource, 
@@ -496,66 +497,11 @@ export const importWithMapping = async (req: Request, res: Response): Promise<vo
 
     // Create leads in database with duplicate detection
     const errors: Array<{ row: number; field: string; message: string }> = [];
-    const processedEmails = new Set<string>();
-    const processedPhones = new Set<string>();
 
     for (const leadData of validLeads) {
       try {
-        const validationError = validationResults.find(vr => vr.data === leadData);
-        const rowNumber = validationError?.rowNumber || 0;
-
-        // Check for duplicates within the current import batch
-        const emailKey = leadData.email.toLowerCase().trim();
-        const phoneKey = leadData.phone.trim();
-        
-        if (processedEmails.has(emailKey)) {
-          errors.push({
-            row: rowNumber,
-            field: 'email',
-            message: `Duplicate email "${leadData.email}" found within import file`
-          });
-          continue;
-        }
-        
-        if (processedPhones.has(phoneKey)) {
-          errors.push({
-            row: rowNumber,
-            field: 'phone',
-            message: `Duplicate phone "${leadData.phone}" found within import file`
-          });
-          continue;
-        }
-
-        // Check for duplicates in database - check email first, then phone only if email doesn't exist
-        const existingEmail = await Lead.findOne({ email: emailKey });
-        if (existingEmail) {
-          errors.push({
-            row: rowNumber,
-            field: 'email',
-            message: `Lead with email "${leadData.email}" already exists in database`
-          });
-          continue;
-        }
-        
-        // Only check phone if email doesn't exist
-        const existingPhone = await Lead.findOne({ phone: phoneKey });
-        if (existingPhone) {
-          errors.push({
-            row: rowNumber,
-            field: 'phone',
-            message: `Lead with phone "${leadData.phone}" already exists in database`
-          });
-          continue;
-        }
-
-        // Create the lead
-        const lead = new Lead(leadData);
-        const savedLead = await lead.save();
+        const savedLead = await createLeadWithDuplicateLink({ ...leadData, assignedBy: systemUser._id });
         createdLeads.push(savedLead);
-        
-        // Track processed emails and phones
-        processedEmails.add(emailKey);
-        processedPhones.add(phoneKey);
         
       } catch (error: any) {
         const validationError = validationResults.find(vr => vr.data === leadData);

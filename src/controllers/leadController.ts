@@ -13,6 +13,7 @@ import { sendError } from '../utils/sendError';
 import { getLeadDateFilter } from '../utils/leadDateFilter';
 import { sendMetaStatusFeedback } from '../service/makeMeta.service';
 import { parseStatusReminder, replaceLeadStatusReminder } from '../service/statusReminder.service';
+import { createLeadWithDuplicateLink } from '../service/leadCreation.service';
 
 
 
@@ -175,68 +176,27 @@ export const createLead = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    // Check for duplicate email first, then phone only if email doesn't exist
-    const existingEmail = await Lead.findOne({ email: leadData.email.toLowerCase().trim() });
-    if (existingEmail) {
-      res.status(400).json({
-        success: false,
-        message: 'Duplicate lead detected',
-        errors: [`A lead with email "${leadData.email}" already exists`],
-        data: {
-          existingLead: {
-            _id: existingEmail._id,
-            name: existingEmail.name,
-            email: existingEmail.email,
-            phone: existingEmail.phone
-          }
-        }
-      });
-      return;
-    }
-    
-    // Only check phone if email doesn't exist
-    const existingPhone = await Lead.findOne({ phone: leadData.phone.trim() });
-    if (existingPhone) {
-      res.status(400).json({
-        success: false,
-        message: 'Duplicate lead detected',
-        errors: [`A lead with phone number "${leadData.phone}" already exists`],
-        data: {
-          existingLead: {
-            _id: existingPhone._id,
-            name: existingPhone.name,
-            email: existingPhone.email,
-            phone: existingPhone.phone
-          }
-        }
-      });
-      return;
-    }
     const {notes, ...leadFields} = leadData;
-    // Create lead
-    const lead = new Lead({
+    const lead = await createLeadWithDuplicateLink({
       ...leadFields,
-      assignedBy: req.user?.userId
-    });
-
-    // Add initial note if provided
-    if (notes) {
-      lead.notes.push({
+      status: 'New',
+      assignedBy: req.user?.userId,
+      notes: notes ? [{
         id: new mongoose.Types.ObjectId().toString(),
         content: notes,
         createdBy: new mongoose.Types.ObjectId(req.user?.userId || ''),
         createdAt: new Date()
-      });
-    }
-
-    await lead.save();
+      }] : []
+    });
 
     // Populate the response
     await lead.populate('assignedByUser', 'name email');
 
     res.status(201).json({
       success: true,
-      message: 'Lead created successfully',
+      message: lead.duplicateOf
+        ? `${lead.duplicateLabel} lead created, unassigned and linked to the older lead`
+        : 'Lead created successfully',
       data: lead
     });
   } catch (error: any) {

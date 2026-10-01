@@ -1,6 +1,5 @@
 import type { Request, Response } from 'express';
 import Lead from '../models/Lead';
-import RetargetingLead from '../models/RetargetingLead';
 import {
   normalizeMakeMetaLeadInput,
   sendMetaStatusFeedback,
@@ -36,13 +35,10 @@ export const receiveMakeMetaLead = async (req: Request, res: Response): Promise<
         ? result.lead.duplicateOf
           ? `${result.lead.duplicateLabel || 'Duplicate'} Meta lead created and linked to the older lead`
           : 'Meta lead created successfully'
-        : result.outcome === 'retargeting'
-          ? 'Repeat Meta lead saved in Retargeting and linked to the existing CRM lead'
-          : 'Meta lead was already processed',
+        : 'Meta lead was already processed',
       data: {
         outcome: result.outcome,
         lead: result.lead,
-        ...(result.retargetingLead ? { retargetingLead: result.retargetingLead } : {}),
         feedback,
       },
     });
@@ -50,22 +46,19 @@ export const receiveMakeMetaLead = async (req: Request, res: Response): Promise<
     const mongoError = error as { code?: number; keyValue?: Record<string, unknown> };
     if (mongoError.code === 11000 && mongoError.keyValue?.metaLeadId) {
       const leadData = normalizeMakeMetaLeadInput(req.body as Record<string, unknown>);
-      const existingRetargeting = await RetargetingLead.findOne({ metaLeadId: leadData.metaLeadId }).lean();
-      const existingLead = existingRetargeting
-        ? await Lead.findById(existingRetargeting.existingLeadId)
-        : await Lead.findOne({ metaLeadId: leadData.metaLeadId });
-
-      res.status(200).json({
-        success: true,
-        message: 'Meta lead was already processed',
-        data: {
-          outcome: 'duplicate',
-          lead: existingLead,
-          ...(existingRetargeting ? { retargetingLead: existingRetargeting } : {}),
-          feedback: { sent: false, skipped: true },
-        },
-      });
-      return;
+      const existingLead = await Lead.findOne({ metaLeadId: leadData.metaLeadId });
+      if (existingLead) {
+        res.status(200).json({
+          success: true,
+          message: 'Meta lead was already processed',
+          data: {
+            outcome: 'duplicate',
+            lead: existingLead,
+            feedback: { sent: false, skipped: true },
+          },
+        });
+        return;
+      }
     }
 
     console.error('Make Meta lead ingestion failed:', error);

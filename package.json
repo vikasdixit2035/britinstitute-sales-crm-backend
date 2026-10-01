@@ -14,7 +14,7 @@
     "remove-crm-user": "tsx src/scripts/removeCrmUser.ts",
     "backfill:ravikant-phone": "tsx src/scripts/backfillRavikantPhone.ts",
     "create-indexes": "tsx src/scripts/createIndexes.ts",
-    "test": "tsx --test src/service/makeMeta.service.test.ts src/service/statusReminder.service.test.ts src/service/zoomTalkTime.test.ts src/service/zoomPhone.talkTime.test.ts src/utils/leadDateFilter.test.ts"
+    "test": "tsx --test src/service/leadCreation.service.test.ts src/service/makeMeta.service.test.ts src/service/statusReminder.service.test.ts src/service/zoomTalkTime.test.ts src/service/zoomPhone.talkTime.test.ts src/utils/leadDateFilter.test.ts"
   },
   "keywords": [
     "lead-management",

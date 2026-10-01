@@ -284,8 +284,7 @@ const leadSchema = new Schema<ILead>({
    Indexes
 ======================= */
 
-// Contact duplicates are normally rejected by the API, but Meta re-enquiries are
-// deliberately stored as separate leads and linked back to the oldest lead.
+// Incoming duplicate enquiries are separate leads linked to the oldest record.
 leadSchema.index(
   { metaLeadId: 1 },
   {

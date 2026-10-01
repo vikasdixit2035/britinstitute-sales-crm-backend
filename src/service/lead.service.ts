@@ -6,6 +6,7 @@ import User from '../models/User';
 import { getCsvFromGoogleSheet } from '../utils/googleSheet';
 import { applyLeadDateFilter, getLeadDateFilter } from '../utils/leadDateFilter';
 import { Response } from 'express';   // ✅ must import from 'express'
+import { createLeadWithDuplicateLink } from './leadCreation.service';
 
 const escapeSearchText = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const phoneContainsSearchCondition = (escapedSearchText: string) => ({
@@ -35,8 +36,9 @@ export const importLeadsFromGoogleSheetService = async (sheetUrl: string) => {
   const requiredFields = ['name', 'email', 'phone'];
 
   let insertedCount = 0;
-  let updatedCount = 0;
+  const updatedCount = 0;
   const duplicateLeads: any[] = [];
+  const systemUser = await User.findOne({ email: 'system@leadmanager.com' }).select('_id');
 
   // Simple normalization function if yours isn't working
   const normalizeRow = (rawRow: any) => {
@@ -114,13 +116,6 @@ export const importLeadsFromGoogleSheetService = async (sheetUrl: string) => {
 
     console.log('👤 Extracted:', { name, email, phone, assignedToName });
 
-    //  Find existing lead
-    const existingLead = await Lead.findOne({
-      $or: [{ email }, { phone }]
-    });
-
-    console.log('🔍 existingLead:', existingLead?._id || 'NOT FOUND');
-
     //  Resolve assigned user
     let assignedUser = null;
     if (assignedToName && assignedToName !== '') {
@@ -143,11 +138,7 @@ export const importLeadsFromGoogleSheetService = async (sheetUrl: string) => {
 
     console.log(' assignedUserId:', assignedUserId || 'NULL');
 
-    // ─────────────────────────────────────────────
-    //  CASE 1: NEW LEAD
-    // ─────────────────────────────────────────────
-    if (!existingLead) {
-      const newLead = await Lead.create({
+    const newLead = await createLeadWithDuplicateLink({
         name,
         email,
         phone,
@@ -156,6 +147,7 @@ export const importLeadsFromGoogleSheetService = async (sheetUrl: string) => {
         source: 'Import',
         status: 'New',
         priority: 'Medium',
+        assignedBy: systemUser?._id,
         assignedTo: assignedUserId || undefined,
         assignmentHistory: assignedUserId
           ? [
@@ -167,92 +159,17 @@ export const importLeadsFromGoogleSheetService = async (sheetUrl: string) => {
               }
             ]
           : []
-      });
-
-      console.log(' New lead created:', newLead._id);
-
-      insertedCount++;
-      continue;
-    }
-
-    // ─────────────────────────────────────────────
-    //  CASE 2: UPDATE EXISTING LEAD'S FOLDER TO "DUPLICATE"
-    // ─────────────────────────────────────────────
-    //  ADDED: Update folder to "duplicate" for existing lead
-    if (existingLead) {
-      // Update the existing lead's folder to "duplicate"
-      existingLead.folder = 'duplicate';
-      await existingLead.save();
-      console.log('📁 Updated existing lead folder to "duplicate":', existingLead._id);
-    }
-
-    // ─────────────────────────────────────────────
-    // CASE 3: EXISTING LEAD — ALREADY ASSIGNED
-    // ─────────────────────────────────────────────
-    if (existingLead.assignedTo) {
-      console.log(' Lead already assigned, keeping same user');
-
-      existingLead.assignmentHistory.push({
-        assignedTo: existingLead.assignedTo as mongoose.Types.ObjectId,
-        assignedBy: null,
-        assignedAt: new Date(),
-        source: 'Reimport'
-      });
-
-      await existingLead.save();
-      updatedCount++;
-      continue;
-    }
-
-    // ─────────────────────────────────────────────
-    //  CASE 4: EXISTING BUT NOT ASSIGNED → ASSIGN
-    // ─────────────────────────────────────────────
-    if (!existingLead.assignedTo && assignedUserId) {
-      console.log(' Assigning unassigned lead');
-
-      //  IMPORTANT FIX (NO TS ERROR)
-      existingLead.set('assignedTo', assignedUserId);
-
-      existingLead.assignmentHistory.push({
-        assignedTo: assignedUserId,
-        assignedBy: null,
-        assignedAt: new Date(),
-        source: 'Import'
-      });
-
-      await existingLead.save();
-      updatedCount++;
-      continue;
-    }
-
-    // ─────────────────────────────────────────────
-    // CASE 5: TRUE DUPLICATE → UPDATE DUPLICATE MODEL
-    // ─────────────────────────────────────────────
-    console.log('⚠️ Duplicate detected');
-
-    let reason = 'EMAIL_PHONE_EXISTS';
-    if (existingLead.email === email) reason = 'EMAIL_EXISTS';
-    else if (existingLead.phone === phone) reason = 'PHONE_EXISTS';
-
-    await DuplicateLead.findOneAndUpdate(
-      { existingLeadId: existingLead._id },
-      {
-        originalData: row,
-        reason,
-        existingLeadId: existingLead._id
-      },
-      { upsert: true }
-    );
-
-    duplicateLeads.push({
-      row: rowNumber,
-      name,
-      email,
-      phone,
-      reason
     });
-    
-    updatedCount++;
+    insertedCount++;
+    if (newLead.duplicateOf) {
+      duplicateLeads.push({
+        row: rowNumber, name, email, phone,
+        leadId: String(newLead._id),
+        existingLeadId: String(newLead.duplicateOf),
+        duplicateLabel: newLead.duplicateLabel,
+        reason: newLead.duplicateMatchReason
+      });
+    }
   }
 
   console.log(' Import Summary:', {
@@ -355,7 +272,7 @@ const getRetargetingLeadsService = async (
 ): Promise<GetLeadsResult & { page: number; limit: number }> => {
   const pageNum = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
   const limitNum = Math.max(1, parseInt(String(req.query.limit || '10'), 10) || 10);
-  const eventFilter: Record<string, unknown> = {};
+  const eventFilter: Record<string, unknown> = { migratedLeadId: { $exists: false } };
   const dateFilter = getLeadDateFilter(req.query as Record<string, unknown>);
   const { lastContactedAt, ...eventDateFilter } = dateFilter;
   Object.assign(eventFilter, eventDateFilter);
@@ -492,7 +409,7 @@ export const countRetargetingLeads = async (
 ): Promise<number> => {
   const { lastContactedAt, ...eventDateFilter } = dateFilter;
   const pipeline: mongoose.PipelineStage[] = [
-    { $match: eventDateFilter },
+    { $match: { ...eventDateFilter, migratedLeadId: { $exists: false } } },
     {
       $lookup: {
         from: Lead.collection.name,

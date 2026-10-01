@@ -15,6 +15,9 @@ const retargetingLeadSchema = new Schema(
       required: true,
       index: true
     },
+    // Keep the original event for audit after conversion to a normal CRM lead.
+    migratedLeadId: { type: Schema.Types.ObjectId, ref: 'Lead', index: true },
+    migratedAt: { type: Date },
     name: {
       type: String,
       trim: true,
